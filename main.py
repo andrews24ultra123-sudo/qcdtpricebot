@@ -2,6 +2,7 @@ import asyncio
 from datetime import datetime, date
 from zoneinfo import ZoneInfo
 import httpx
+import json
 
 # ================= CONFIG =================
 
@@ -13,7 +14,6 @@ BASE_URL = f"https://api.telegram.org/bot{TOKEN}"
 
 DAILY_REMINDER = "📝 Ascent, please remember to update QCDT price on the portal."
 
-# Public holiday API
 HOLIDAY_API_BASE = "https://date.nager.at/api/v3/PublicHolidays"
 
 # ================= HELPERS =================
@@ -48,7 +48,11 @@ async def send_poll_and_pin(question: str, options: list[str]):
     if not r:
         return
 
-    js = r.json()
+    try:
+        js = r.json()
+    except Exception:
+        return
+
     if r.status_code == 200 and js.get("ok"):
         mid = js["result"]["message_id"]
         await tg_post(
@@ -67,15 +71,37 @@ def fmt_day(d: date) -> str:
 
 _holiday_cache = {}
 
-async def fetch_holidays_for_year(country_code: str, year: int):
+async def fetch_holidays_for_year(country_code: str, year: int) -> list[dict]:
     key = (year, country_code)
     if key in _holiday_cache:
         return _holiday_cache[key]
 
+    url = f"{HOLIDAY_API_BASE}/{year}/{country_code}"
     async with httpx.AsyncClient() as client:
-        r = await client.get(f"{HOLIDAY_API_BASE}/{year}/{country_code}", timeout=20)
-        r.raise_for_status()
+        try:
+            r = await client.get(url, timeout=20)
+        except Exception as e:
+            print(f"HOLIDAY GET EXCEPTION {country_code} {year}: {e}")
+            _holiday_cache[key] = []
+            return []
+
+    if r.status_code != 200:
+        print(f"HOLIDAY GET non-200 {country_code} {year}: {r.status_code}")
+        _holiday_cache[key] = []
+        return []
+
+    ctype = (r.headers.get("content-type") or "").lower()
+    if "json" not in ctype:
+        print(f"HOLIDAY GET non-json {country_code} {year}")
+        _holiday_cache[key] = []
+        return []
+
+    try:
         data = r.json()
+        if not isinstance(data, list):
+            data = []
+    except json.JSONDecodeError:
+        data = []
 
     _holiday_cache[key] = data
     return data
@@ -97,9 +123,12 @@ async def weekly_holiday_summary_message():
         hits = []
         for y in years_needed:
             for h in await fetch_holidays_for_year(code, y):
-                hd = date.fromisoformat(h["date"])
+                try:
+                    hd = date.fromisoformat(h["date"])
+                except Exception:
+                    continue
                 if monday <= hd <= sunday:
-                    hits.append((hd, h.get("name") or h.get("localName")))
+                    hits.append((hd, h.get("name") or h.get("localName") or "Holiday"))
 
         hits.sort(key=lambda x: x[0])
 
@@ -116,9 +145,6 @@ async def weekly_holiday_summary_message():
 
 async def scheduler():
     print("BOOT: scheduler() starting")
-    print(f"BOOT: TZ={TZ}, CHAT_ID={CHAT_ID}")
-    print("BOOT: TOKEN hardcoded")
-
     fired = set()
     last_date = datetime.now(TZ).date()
 
@@ -126,45 +152,33 @@ async def scheduler():
         f"✅ QCDT bot online at {datetime.now(TZ):%a %d %b %Y %H:%M:%S} (SGT)"
     )
 
-    last_tick_minute = None
-
     while True:
         now = datetime.now(TZ)
-
-        # log once per minute
-        key = (now.date(), now.hour, now.minute)
-        if last_tick_minute != key:
-            print(f"TICK: {now:%a %d %b %Y %H:%M:%S} SGT")
-            last_tick_minute = key
 
         if now.date() != last_date:
             fired.clear()
             last_date = now.date()
-            print("INFO: new day -> fired cleared")
 
-        wd = now.weekday()   # Mon=0 ... Sun=6
+        wd = now.weekday()  # Mon=0 ... Sun=6
         h, m = now.hour, now.minute
 
-        # Monday 2:57 PM — weekly holiday summary
-        if wd == 0 and h == 14 and m == 57 and "MON_HOL_SUMMARY" not in fired:
-            print("EVENT: MON_HOL_SUMMARY")
-            await send_text(await weekly_holiday_summary_message())
+        # Monday 5:32 PM — weekly holiday summary
+        if wd == 0 and h == 17 and m == 32 and "MON_HOL_SUMMARY" not in fired:
             fired.add("MON_HOL_SUMMARY")
+            await send_text(await weekly_holiday_summary_message())
 
-        # Mon–Fri 3:00 PM — reminder
-        if wd < 5 and h == 15 and m == 0 and "DAILY_REMINDER" not in fired:
-            print("EVENT: DAILY_REMINDER")
-            await send_text(DAILY_REMINDER)
+        # Mon–Fri 5:35 PM — reminder text
+        if wd < 5 and h == 17 and m == 35 and "DAILY_REMINDER" not in fired:
             fired.add("DAILY_REMINDER")
+            await send_text(DAILY_REMINDER)
 
-        # Mon–Fri 3:05 PM — poll (pinned)
-        if wd < 5 and h == 15 and m == 5 and "DAILY_POLL" not in fired:
-            print("EVENT: DAILY_POLL")
+        # Mon–Fri 5:37 PM — poll (sent + pinned)
+        if wd < 5 and h == 17 and m == 37 and "DAILY_POLL" not in fired:
+            fired.add("DAILY_POLL")
             await send_poll_and_pin(
                 "Has QCDT price been updated on portal?",
                 ["Yes", "No", "NA - public holiday"],
             )
-            fired.add("DAILY_POLL")
 
         await asyncio.sleep(15)
 
