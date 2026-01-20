@@ -7,7 +7,7 @@ import json
 # ================= CONFIG =================
 
 TOKEN = "8591711650:AAHYMbGwiYxCqZm64tKyWiOgl2moiRUvVWM"
-CHAT_ID = -4680966417  # UPDATED GROUP CHAT ID
+CHAT_ID = -4680966417
 
 TZ = ZoneInfo("Asia/Singapore")
 BASE_URL = f"https://api.telegram.org/bot{TOKEN}"
@@ -113,7 +113,6 @@ async def holiday_summary_for_this_week():
 
     countries = [
         ("Singapore", "SG"),
-        ("USA", "US"),
         ("Dubai (UAE)", "AE"),
     ]
 
@@ -162,7 +161,7 @@ async def scheduler():
         wd = now.weekday()  # Mon=0 ... Sun=6
         h, m = now.hour, now.minute
 
-        # Mon–Fri 4:00 PM — holiday summary
+        # Mon–Fri 4:00 PM — holiday summary (SG + UAE)
         if wd < 5 and h == 16 and m == 0 and "HOL_SUMMARY" not in fired:
             fired.add("HOL_SUMMARY")
             await send_text(await holiday_summary_for_this_week())
@@ -177,7 +176,7 @@ async def scheduler():
             fired.add("DAILY_POLL")
             await send_poll_and_pin(
                 "Has QCDT price been updated on portal?",
-                ["Yes", "No", "NA - public holiday"],
+                ["Yes", "No", "NA - SG/UAE public holiday"],
             )
 
         await asyncio.sleep(15)
